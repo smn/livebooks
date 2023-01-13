@@ -1,0 +1,338 @@
+# Elixir Lisp
+
+```elixir
+Mix.install([
+  {:nimble_parsec, "~> 1.2"}
+])
+```
+
+## Lexp
+
+This is a Livebook that works through Peter Norvig's [*How to Write a Lisp in Python*](http://www.norvig.com/lispy.html) but then in Elixir.
+
+The parser is implemented using Dashbit's excellent NimbleParsec package.
+
+There's some pecularities I implemented to ensure that Norvig's examples do work in Elixir. Mostly around treating `False` as `0` and `True` as `1`.
+
+```elixir
+program = "(begin (define r 10) (* pi (* r r)))"
+```
+
+```elixir
+defmodule Lexp.Parser do
+  import NimbleParsec
+
+  start_paren = ignore(string("("))
+  close_paren = ignore(string(")"))
+
+  int = integer(min: 1)
+
+  float =
+    int
+    |> string(".")
+    # Not using integer as I want to keep leading zeros
+    |> concat(utf8_string([?0..?9], min: 1))
+    |> reduce({Enum, :join, []})
+    |> map({Float, :parse, []})
+    |> map({Kernel, :elem, [0]})
+
+  symbol = utf8_string([{:not, ?(..?)}, {:not, ?\s}, {:not, ?\n}], min: 1)
+
+  atom = choice([float, int, symbol])
+  whitespace = string(" ") |> ignore()
+  newlines = choice([string("\n"), string("\r")]) |> ignore()
+
+  expression =
+    repeat(choice([newlines, whitespace]))
+    |> concat(start_paren)
+    |> repeat(
+      choice([
+        newlines,
+        wrap(parsec(:parse)),
+        atom,
+        whitespace
+      ])
+    )
+    |> concat(close_paren)
+
+  defparsec(:parse, expression)
+end
+```
+
+```elixir
+defmodule Lexp.Eval do
+  def default_env do
+    %{
+      "pi" => :math.pi(),
+      "+" => fn [a, b] -> a + b end,
+      "-" => fn [a, b] -> a - b end,
+      "*" => fn [a, b] -> a * b end,
+      "/" => fn [a, b] -> a / b end,
+      ">" => fn [a, b] -> a > b end,
+      "<" => fn [a, b] -> a < b end,
+      ">=" => fn [a, b] -> a >= b end,
+      "<=" => fn [a, b] -> a <= b end,
+      "=" => fn [a, b] -> a == b end,
+      "abs" => fn [a] -> Kernel.abs(a) end,
+      "append" => fn [a, b] -> a + b end,
+      "apply" => fn [proc, args] -> apply(proc, args) end,
+      "begin" => fn [list] -> List.last(list) end,
+      "car" => fn
+        [[]] -> []
+        [list] -> hd(list)
+      end,
+      "cdr" => fn
+        [[]] -> []
+        [list] -> tl(list)
+      end,
+      "cons" => fn [x, y] -> [x] + y end,
+      "eq?" => fn [a, b] -> a == b end,
+      "expt" => fn [a, b] -> :math.pow(a, b) end,
+      "equal?" => fn [a, b] -> if(a == b, do: 1, else: 0) end,
+      "length" => fn [term] -> length(term) end,
+      "list" => fn x -> Enum.into(x, []) end,
+      "list?" => fn [a] -> is_list(a) end,
+      "map" => fn [a, b] -> Enum.map(b, a) end,
+      "max" => fn [a] -> Enum.max(a) end,
+      "min" => fn [a] -> Enum.min(a) end,
+      "not" => fn [a] -> Kernel.not(a) end,
+      "null?" => fn [a] -> is_nil(a) end,
+      "number?" => fn [a] -> is_number(a) end,
+      "print" => fn [a] -> IO.puts("#{inspect(a)}") end,
+      "procedure?" => fn [a] -> is_function(a) end,
+      "round" => fn [a] -> round(a) end,
+      "symbol?" => fn [a] -> is_binary(a) end
+    }
+    |> Enum.map(fn
+      {key, value} when is_function(value) ->
+        {key, fn args, outer_env -> {value.(args), outer_env} end}
+
+      {key, value} ->
+        {key, value}
+    end)
+    |> Enum.into(%{})
+  end
+
+  def eval(expr, env \\ default_env())
+  def eval([head | tail], env), do: eval(head, tail, env)
+
+  def eval("define", [symbol, expr], env) do
+    {result, env} = eval([expr], env)
+    {result, Map.put(env, symbol, result)}
+  end
+
+  def eval("if", [test, conseq, alt], env) do
+    {result, env} =
+      case eval([test], env) do
+        {0, env} -> {false, env}
+        {[], env} -> {false, env}
+        {nil, env} -> {false, env}
+        {other, env} -> {other, env}
+      end
+
+    exp = if(result, do: conseq, else: alt)
+    eval([exp], env)
+  end
+
+  def eval("set!", [symbol, expr], env) do
+    {result, env} = eval([expr], env)
+    {result, Map.put(env, symbol, result)}
+  end
+
+  def eval("quote", [expr], env) do
+    {expr, env}
+  end
+
+  def eval("lambda", [params, body], calling_env) do
+    lambda = fn args, outer_env ->
+      local_env =
+        [params, args]
+        |> Enum.zip()
+        |> Enum.into(%{})
+        |> IO.inspect(label: "local env?", charlists: :as_lists)
+
+      lambda_env =
+        calling_env
+        |> Map.merge(outer_env)
+        |> Map.merge(local_env)
+
+      eval([body], lambda_env)
+    end
+
+    {lambda, calling_env}
+  end
+
+  def eval(expr, [], env) when is_list(expr), do: eval(expr, env)
+  def eval(symbol, [], env), do: {Map.get(env, symbol, symbol), env}
+
+  def eval(symbol, acc, env) do
+    {proc, env} = eval([symbol], env)
+
+    {args, env} =
+      Enum.reduce(acc, {[], env}, fn expr, {acc, env} ->
+        {result, env} = eval([expr], env)
+        {[result | acc], env}
+      end)
+
+    IO.inspect(symbol, label: "symbol?")
+    IO.inspect(proc, label: "proc?")
+    IO.inspect(Enum.reverse(args), label: "args?", charlists: :as_lists)
+    apply(proc, [Enum.reverse(args), env])
+  end
+end
+```
+
+```elixir
+defmodule Lexp do
+  def eval(expr, env \\ Lexp.Eval.default_env()) do
+    {:ok, ast, "", _, _, _} = Lexp.Parser.parse(expr)
+    Lexp.Eval.eval(ast, env)
+  end
+end
+```
+
+```elixir
+ExUnit.start()
+
+defmodule SampleTest do
+  use ExUnit.Case
+
+  test "parsing & multiplication with newlines" do
+    {:ok, ast, "", _, _, _} = Lexp.Parser.parse("(* 
+      10 
+      1
+    )")
+    assert {10, _env} = Lexp.Eval.eval(ast)
+  end
+
+  test "define" do
+    assert {10, env} = Lexp.eval("(define r 10)")
+    assert {result, _env} = Lexp.eval("(* pi (* r r))", env)
+    assert result == 100 * :math.pi()
+  end
+
+  test "if" do
+    assert {result, _env} = Lexp.eval("(if (> (* 11 11) 120) (* 7 6) oops)")
+    assert result == 7 * 6
+  end
+
+  test "expt" do
+    assert {result, _env} = Lexp.eval("(expt 2 3)")
+    assert result == :math.pow(2, 3)
+  end
+
+  test "list" do
+    assert {[1, 2, 3], _} = Lexp.eval("(list 1 2 3)")
+  end
+
+  test "list with expressions" do
+    assert {result, _env} = Lexp.eval("(list (+ 1 1) (+ 2 2) (* 2 3) (expt 2 3))")
+    assert result == [2, 4, 6, :math.pow(2, 3)]
+  end
+
+  test "lambda" do
+    assert {lambda, env} = Lexp.eval("(define circle-area (lambda (r) (* pi (* r r))))")
+    assert is_function(lambda)
+    assert {result, _env} = lambda.([10], env)
+    assert result == :math.pi() * 10 * 10
+  end
+
+  test "calling lambdas" do
+    assert {_result, env} = Lexp.eval("(define circle-area (lambda (r) (* pi (* r r))))")
+    assert {result, _env} = Lexp.eval("(circle-area 3)", env)
+    assert result == :math.pi() * 3 * 3
+  end
+
+  test "factorial" do
+    assert {_result, env} =
+             Lexp.eval("(define fact (lambda (n) (if (<= n 1) 1 (* n (fact (- n 1))))))")
+
+    assert {3_628_800, _env} = Lexp.eval("(fact 10)", env)
+  end
+
+  test "equal?" do
+    assert {_, env} = Lexp.eval("(define first car)")
+    assert {1, _env} = Lexp.eval("(equal? 0 (first (list 0 1 2 3 4)))", env)
+  end
+
+  test "quote" do
+    assert {"the", _env} = Lexp.eval("(quote the)")
+    assert {3, _env} = Lexp.eval("(quote 3)")
+  end
+
+  test "twice" do
+    assert {_result, env} = Lexp.eval("(define twice (lambda (x) (* 2 x)))")
+    assert {10, _env} = Lexp.eval("(twice 5)", env)
+  end
+
+  test "factorial with function" do
+    assert {circle_area, env} = Lexp.eval("(define circle-area (lambda (r) (* pi (* r r))))")
+    assert is_function(circle_area)
+    assert Function.info(circle_area, :arity) == {:arity, 2}
+    assert {result, _env} = circle_area.([10], env)
+    assert result == :math.pi() * 10 * 10
+
+    assert {_result, env} =
+             Lexp.eval("(define fact (lambda (n) (if (<= n 1) 1 (* n (fact (- n 1))))))", env)
+
+    assert {41_369_087_205_782.695, _env} = Lexp.eval("(circle-area (fact 10))", env)
+  end
+
+  test "count" do
+    assert {_result, env} = Lexp.eval("(define first car)")
+    assert {_result, env} = Lexp.eval("(define rest cdr)", env)
+    assert {1, env} = Lexp.eval("(first (list 1 2 3))", env)
+    assert {1, env} = Lexp.eval("(car (list 1 2 3))", env)
+    assert {[2, 3], env} = Lexp.eval("(rest (list 1 2 3))", env)
+    assert {[2, 3], env} = Lexp.eval("(cdr (list 1 2 3))", env)
+    assert {1, env} == Lexp.eval("(equal? 0 (first (list 0 1 2 3 0 0)))", env)
+
+    assert {counter, env} =
+             Lexp.eval(
+               "(define count
+                 (lambda (item L) 
+                   (if L (+ (equal? item (first L)) (count item (rest L))) 0)
+                 )
+               )",
+               env
+             )
+
+    assert is_function(counter)
+    assert {3, env} = counter.([0, [0, 1, 2, 3, 0, 0]], env)
+    assert {result, env} = Lexp.eval("(count 0 (list 0 1 2 3 0 0))", env)
+    assert result == 3
+
+    assert {result, _env} =
+             Lexp.eval(
+               "(count (quote the) (quote (the more the merrier the bigger the better)))",
+               env
+             )
+
+    assert result == 4
+  end
+
+  @tag :current
+  @tag timeout: 1
+  test "twice and repeat" do
+    assert {repeat, env} = Lexp.eval("(define repeat (lambda (f) (lambda (x) (f (f x)))))")
+    assert is_function(repeat)
+
+    assert {twicer, env} = Lexp.eval("(define twice (lambda (x) (* 2 x)))", env)
+
+    assert is_function(twicer)
+    assert {20, env} = twicer.([10], env)
+
+    assert {twice_repeater, env} = repeat.([twicer], env)
+    assert {40, env} = twice_repeater.([10], env)
+
+    assert {40, env} = Lexp.eval("((repeat twice) 10)", env)
+
+    # This here goes into an infinite loop because variable f seems to be self referencing ...
+    assert {160, _env} = Lexp.eval("((repeat (repeat twice)) 10)", env)
+    # assert {_result, _env} = Lexp.eval("(repeat (repeat twice))", env)
+  end
+end
+
+ExUnit.configure(include: [:current], exclude: [:test])
+ExUnit.run()
+```
