@@ -115,11 +115,11 @@ defmodule Lexp.Eval do
       "apply" => fn [proc, args] -> apply(proc, args) end,
       "begin" => fn [list] -> List.last(list) end,
       "car" => fn
-        [[]] -> []
+        [[]] -> 0
         [list] -> hd(list)
       end,
       "cdr" => fn
-        [[]] -> []
+        [[]] -> 0
         [list] -> tl(list)
       end,
       "cons" => fn [x, y] -> [x] + y end,
