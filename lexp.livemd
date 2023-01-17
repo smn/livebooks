@@ -25,7 +25,11 @@ defmodule Lexp.Parser do
   start_paren = ignore(string("("))
   close_paren = ignore(string(")"))
 
-  int = integer(min: 1)
+  int =
+    optional(string("-"))
+    |> concat(integer(min: 1))
+    |> reduce({Enum, :join, [""]})
+    |> map({String, :to_integer, []})
 
   float =
     int
@@ -101,54 +105,53 @@ defmodule Lexp.Eval do
   def default_env do
     %{
       "pi" => :math.pi(),
-      "+" => fn [a, b] -> a + b end,
-      "-" => fn [a, b] -> a - b end,
-      "*" => fn [a, b] -> a * b end,
-      "/" => fn [a, b] -> a / b end,
-      ">" => fn [a, b] -> a > b end,
-      "<" => fn [a, b] -> a < b end,
-      ">=" => fn [a, b] -> a >= b end,
-      "<=" => fn [a, b] -> a <= b end,
-      "=" => fn [a, b] -> a == b end,
-      "abs" => fn [a] -> Kernel.abs(a) end,
-      "append" => fn [a, b] -> a + b end,
-      "apply" => fn [proc, args] -> apply(proc, args) end,
-      "begin" => fn [list] -> List.last(list) end,
+      "+" => fn [a, b], env -> {a + b, env} end,
+      "-" => fn [a, b], env -> {a - b, env} end,
+      "*" => fn [a, b], env -> {a * b, env} end,
+      "/" => fn [a, b], env -> {a / b, env} end,
+      ">" => fn [a, b], env -> {a > b, env} end,
+      "<" => fn [a, b], env -> {a < b, env} end,
+      ">=" => fn [a, b], env -> {a >= b, env} end,
+      "<=" => fn [a, b], env -> {a <= b, env} end,
+      "=" => fn [a, b], env -> {a == b, env} end,
+      "abs" => fn [a], env -> {Kernel.abs(a), env} end,
+      "append" => fn [a, b], env -> {a + b, env} end,
+      "apply" => fn [proc, args], env -> {apply(proc, args), env} end,
+      "begin" => fn [list], env -> {List.last(list), env} end,
       "car" => fn
-        [[]] -> 0
-        [list] -> hd(list)
+        [[]], env -> {0, env}
+        [list], env -> {hd(list), env}
       end,
       "cdr" => fn
-        [[]] -> 0
-        [list] -> tl(list)
+        [[]], env -> {0, env}
+        [list], env -> {tl(list), env}
       end,
-      "cons" => fn [x, y] -> [x] + y end,
-      "eq?" => fn [a, b] -> a == b end,
-      "expt" => fn [a, b] -> :math.pow(a, b) end,
-      "equal?" => fn [a, b] -> if(a == b, do: 1, else: 0) end,
-      "length" => fn [term] -> length(term) end,
-      "list" => fn x -> Enum.into(x, []) end,
-      "list?" => fn [a] -> is_list(a) end,
-      "map" => fn [a, b] -> Enum.map(b, a) end,
-      "max" => fn [a] -> Enum.max(a) end,
-      "min" => fn [a] -> Enum.min(a) end,
-      "not" => fn [a] -> Kernel.not(a) end,
-      "null?" => fn [a] -> is_nil(a) end,
-      "number?" => fn [a] -> is_number(a) end,
-      "print" => fn [a] -> IO.puts("#{inspect(a)}") end,
-      "procedure?" => fn [a] -> is_function(a) end,
-      "round" => fn [a] -> round(a) end,
-      "symbol?" => fn [a] -> is_binary(a) end
+      "cons" => fn [x, y], env -> {[x | y], env} end,
+      "eq?" => fn [a, b], env -> {a == b, env} end,
+      "expt" => fn [a, b], env -> {:math.pow(a, b), env} end,
+      "equal?" => fn [a, b], env -> {if(a == b, do: 1, else: 0), env} end,
+      "length" => fn [term], env -> {length(term), env} end,
+      "list" => fn x, env -> {Enum.into(x, []), env} end,
+      "list?" => fn [a], env -> {is_list(a), env} end,
+      "map" => fn [a, b], env ->
+        # Using reduce to implement a map to ensure any
+        # change to the env are carried forward
+        Enum.reduce(b, {[], env}, fn item, {acc, env} ->
+          {result, env} = a.([item], env)
+          # Using concat to maint order
+          {Enum.concat(acc, [result]), env}
+        end)
+      end,
+      "max" => fn [a], env -> {Enum.max(a), env} end,
+      "min" => fn [a], env -> {Enum.min(a), env} end,
+      "not" => fn [a], env -> {Kernel.not(a), env} end,
+      "null?" => fn [a], env -> {is_nil(a), env} end,
+      "number?" => fn [a], env -> {is_number(a), env} end,
+      "print" => fn [a], env -> {IO.puts("#{inspect(a)}"), env} end,
+      "procedure?" => fn [a], env -> {is_function(a), env} end,
+      "round" => fn [a], env -> {round(a), env} end,
+      "symbol?" => fn [a], env -> {is_binary(a), env} end
     }
-    # these never do anything with the env so just rewrite the function to 
-    # expect an env and return it when called.
-    |> Enum.map(fn
-      {key, value} when is_function(value) ->
-        {key, fn args, outer_env -> {value.(args), outer_env} end}
-
-      {key, value} ->
-        {key, value}
-    end)
     |> Enum.into(%{})
     |> Lexp.Env.new()
   end
@@ -162,15 +165,16 @@ defmodule Lexp.Eval do
   end
 
   def eval("if", [test, conseq, alt], env) do
-    {result, env} =
+    {boolean_result, _original, env} =
       case eval([test], env) do
-        {0, env} -> {false, env}
-        {[], env} -> {false, env}
-        {nil, env} -> {false, env}
-        {other, env} -> {other, env}
+        {0, env} -> {false, 0, env}
+        {[], env} -> {false, [], env}
+        {nil, env} -> {false, nil, env}
+        {false, env} -> {false, false, env}
+        {other, env} -> {true, other, env}
       end
 
-    exp = if(result, do: conseq, else: alt)
+    exp = if(boolean_result, do: conseq, else: alt)
     eval([exp], env)
   end
 
@@ -191,8 +195,9 @@ defmodule Lexp.Eval do
         |> Enum.into(%{})
 
       runtime_env = %Lexp.Env{inner: env.inner, outer: Lexp.Env.merge(env, calling_env)}
-      env = Lexp.Env.new(local_env, runtime_env)
-      eval([body], env)
+      lambda_env = Lexp.Env.new(local_env, runtime_env)
+      {result, _discarded_env} = eval([body], lambda_env)
+      {result, env}
     end
 
     {lambda, calling_env}
@@ -292,6 +297,7 @@ defmodule SampleTest do
   test "quote" do
     assert {"the", _env} = Lexp.eval("(quote the)")
     assert {3, _env} = Lexp.eval("(quote 3)")
+    assert {[], _env} = Lexp.eval("(quote ())")
   end
 
   test "twice" do
@@ -359,6 +365,44 @@ defmodule SampleTest do
 
     assert {40, env} = Lexp.eval("((repeat twice) 10)", env)
     assert {160, _env} = Lexp.eval("((repeat (repeat twice)) 10)", env)
+  end
+
+  test "deep twice & repeat" do
+    assert {_repeater, env} = Lexp.eval("(define repeat (lambda (f) (lambda (x) (f (f x)))))")
+    assert {_twicer, env} = Lexp.eval("(define twice (lambda (x) (* 2 x)))", env)
+    assert {655_360, _env} = Lexp.eval("((repeat (repeat (repeat (repeat twice)))) 10)", env)
+  end
+
+  test "pow" do
+    # for some reason the example has this as pow but that's not defined
+    # so I will here
+    assert {_pow, env} = Lexp.eval("(define pow expt)")
+    assert {65536.0, _} = Lexp.eval("(pow 2 16)", env)
+  end
+
+  @tag :current
+  test "fib" do
+    assert {_fib, env} = Lexp.eval("
+      (define fib (lambda (n)
+        (if (< n 2)
+          1 
+          (+ 
+            (fib (- n 1))
+            (fib (- n 2))
+          )
+        )
+      ))")
+
+    assert {_range, env} =
+             Lexp.eval(
+               "(define range (lambda (a b) (if (= a b) (quote ()) (cons a (range (+ a 1) b)))))",
+               env
+             )
+
+    # this is *wrong* though Peter Norvig! ... fib 0 should be 0, not 1...
+    # leaving this as a proof that it is actually working as lis.py even though that implementation
+    # of fibonacci is wrong...
+    assert {[1, 1, 2, 3, 5, 8, 13, 21, 34, 55], _env} = Lexp.eval("(map fib (range 0 10))", env)
   end
 end
 
