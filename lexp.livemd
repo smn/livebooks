@@ -60,6 +60,43 @@ end
 ```
 
 ```elixir
+defmodule Lexp.Env do
+  defstruct inner: %{}, outer: nil
+  alias Lexp.Env
+
+  def new(inner, outer \\ nil) do
+    %Env{inner: inner, outer: outer}
+  end
+
+  def put(%Env{} = env, key, value) do
+    %{env | inner: Map.put(env.inner, key, value)}
+  end
+
+  def find(%Env{} = env, var) do
+    if env.outer do
+      Map.get(env.inner, var) || Env.find(env.outer, var)
+    else
+      Map.get(env.inner, var) || var
+    end
+  end
+
+  def merge(%Env{} = first, %Env{outer: nil} = second) do
+    %Env{
+      inner: Map.merge(first.inner, second.inner),
+      outer: first.outer
+    }
+  end
+
+  def merge(%Env{} = first, %Env{} = second) do
+    %Env{
+      inner: Map.merge(first.inner, second.inner),
+      outer: Map.merge(first.outer || %{}, second.outer)
+    }
+  end
+end
+```
+
+```elixir
 defmodule Lexp.Eval do
   def default_env do
     %{
@@ -103,6 +140,8 @@ defmodule Lexp.Eval do
       "round" => fn [a] -> round(a) end,
       "symbol?" => fn [a] -> is_binary(a) end
     }
+    # these never do anything with the env so just rewrite the function to 
+    # expect an env and return it when called.
     |> Enum.map(fn
       {key, value} when is_function(value) ->
         {key, fn args, outer_env -> {value.(args), outer_env} end}
@@ -111,6 +150,7 @@ defmodule Lexp.Eval do
         {key, value}
     end)
     |> Enum.into(%{})
+    |> Lexp.Env.new()
   end
 
   def eval(expr, env \\ default_env())
@@ -118,7 +158,7 @@ defmodule Lexp.Eval do
 
   def eval("define", [symbol, expr], env) do
     {result, env} = eval([expr], env)
-    {result, Map.put(env, symbol, result)}
+    {result, Lexp.Env.put(env, symbol, result)}
   end
 
   def eval("if", [test, conseq, alt], env) do
@@ -136,7 +176,7 @@ defmodule Lexp.Eval do
 
   def eval("set!", [symbol, expr], env) do
     {result, env} = eval([expr], env)
-    {result, Map.put(env, symbol, result)}
+    {result, Lexp.Env.put(env, symbol, result)}
   end
 
   def eval("quote", [expr], env) do
@@ -144,26 +184,22 @@ defmodule Lexp.Eval do
   end
 
   def eval("lambda", [params, body], calling_env) do
-    lambda = fn args, outer_env ->
+    lambda = fn args, env ->
       local_env =
         [params, args]
         |> Enum.zip()
         |> Enum.into(%{})
-        |> IO.inspect(label: "local env?", charlists: :as_lists)
 
-      lambda_env =
-        calling_env
-        |> Map.merge(outer_env)
-        |> Map.merge(local_env)
-
-      eval([body], lambda_env)
+      runtime_env = %Lexp.Env{inner: env.inner, outer: Lexp.Env.merge(env, calling_env)}
+      env = Lexp.Env.new(local_env, runtime_env)
+      eval([body], env)
     end
 
     {lambda, calling_env}
   end
 
   def eval(expr, [], env) when is_list(expr), do: eval(expr, env)
-  def eval(symbol, [], env), do: {Map.get(env, symbol, symbol), env}
+  def eval(symbol, [], env), do: {Lexp.Env.find(env, symbol), env}
 
   def eval(symbol, acc, env) do
     {proc, env} = eval([symbol], env)
@@ -171,12 +207,10 @@ defmodule Lexp.Eval do
     {args, env} =
       Enum.reduce(acc, {[], env}, fn expr, {acc, env} ->
         {result, env} = eval([expr], env)
+
         {[result | acc], env}
       end)
 
-    IO.inspect(symbol, label: "symbol?")
-    IO.inspect(proc, label: "proc?")
-    IO.inspect(Enum.reverse(args), label: "args?", charlists: :as_lists)
     apply(proc, [Enum.reverse(args), env])
   end
 end
@@ -311,8 +345,6 @@ defmodule SampleTest do
     assert result == 4
   end
 
-  @tag :current
-  @tag timeout: 1
   test "twice and repeat" do
     assert {repeat, env} = Lexp.eval("(define repeat (lambda (f) (lambda (x) (f (f x)))))")
     assert is_function(repeat)
@@ -326,13 +358,10 @@ defmodule SampleTest do
     assert {40, env} = twice_repeater.([10], env)
 
     assert {40, env} = Lexp.eval("((repeat twice) 10)", env)
-
-    # This here goes into an infinite loop because variable f seems to be self referencing ...
     assert {160, _env} = Lexp.eval("((repeat (repeat twice)) 10)", env)
-    # assert {_result, _env} = Lexp.eval("(repeat (repeat twice))", env)
   end
 end
 
-ExUnit.configure(include: [:current], exclude: [:test])
+# ExUnit.configure(include: [:current], exclude: [:test])
 ExUnit.run()
 ```
