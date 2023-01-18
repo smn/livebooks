@@ -399,10 +399,33 @@ defmodule SampleTest do
                env
              )
 
-    # this is *wrong* though Peter Norvig! ... fib 0 should be 0, not 1...
+    # these are *wrong* though Peter Norvig! ... fib 0 should be 0, not 1...
     # leaving this as a proof that it is actually working as lis.py even though that implementation
     # of fibonacci is wrong...
     assert {[1, 1, 2, 3, 5, 8, 13, 21, 34, 55], _env} = Lexp.eval("(map fib (range 0 10))", env)
+
+    assert {[
+              1,
+              1,
+              2,
+              3,
+              5,
+              8,
+              13,
+              21,
+              34,
+              55,
+              89,
+              144,
+              233,
+              377,
+              610,
+              987,
+              1597,
+              2584,
+              4181,
+              6765
+            ], _env} = Lexp.eval("(map fib (range 0 20))", env)
   end
 end
 
