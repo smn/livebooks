@@ -382,7 +382,6 @@ defmodule SampleTest do
     assert {65536.0, _} = Lexp.eval("(pow 2 16)", env)
   end
 
-  @tag :current
   test "fib" do
     assert {_fib, env} = Lexp.eval("
       (define fib (lambda (n)
