@@ -12,7 +12,9 @@ This is a Livebook that works through Peter Norvig's [*How to Write a Lisp in Py
 
 The parser is implemented using Dashbit's excellent NimbleParsec package.
 
-There's some pecularities I implemented to ensure that Norvig's examples do work in Elixir. Mostly around treating `False` as `0` and `True` as `1`.
+There's some pecularities I implemented to ensure that Norvig's examples do work in Elixir. Mostly around treating `0` and `[]` as `false`.
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fsmn%2Flivebooks%2Fblob%2Fmain%2Flexp.livemd)
 
 ```elixir
 program = "(begin (define r 10) (* pi (* r r)))"
