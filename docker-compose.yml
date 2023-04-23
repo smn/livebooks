@@ -1,0 +1,28 @@
+version: "3"
+services:
+  postgresql:
+    image: postgres:12-alpine
+    command:
+      [
+        "postgres",
+        "-c",
+        'listen_addresses="*"',
+        "-c",
+        "fsync=off"
+      ]
+    environment:
+      POSTGRES_DB: tinysql_dev
+      POSTGRES_USER: tinysql
+      POSTGRES_PASSWORD: tinysql
+    healthcheck:
+      test: pg_isready -U tinysql -d tinysql_dev
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
+volumes:
+  postgres-data: null

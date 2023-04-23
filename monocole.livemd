@@ -1,0 +1,146 @@
+# Monocle
+
+```elixir
+Mix.install(
+  [
+    {:opentelemetry_api, "~> 1.2"},
+    {:phoenix, "~> 1.7"},
+    {:bandit, "~> 0.7.7"},
+    {:jason, "~> 1.4"}
+  ],
+  config: [
+    monocle: [
+      {Monocle.Endpoint,
+       [
+         http: [ip: {127, 0, 0, 1}, port: 5001],
+         server: true,
+         live_view: [signing_salt: "aaaaaaaa"],
+         secret_key_base: String.duplicate("a", 64),
+         adapter: Bandit.PhoenixAdapter
+       ]}
+    ]
+  ]
+)
+```
+
+## Section
+
+```elixir
+defmodule Monocle.Decorator do
+  defmacro __using__(_opts) do
+    quote do
+      @monocles []
+      Module.register_attribute(__MODULE__, :_o, accumulate: true)
+      @on_definition Monocle.Decorator
+      @before_compile Monocle.Decorator
+
+      # import Monocle.Decorator
+    end
+  end
+
+  def __on_definition__(env, :def, name, args, guards, body),
+    do: annotate_method(env.module, name, args, guards, body)
+
+  def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: nil
+
+  def annotate_method(module, function, args, guards, body) do
+    if monocle = Module.delete_attribute(module, :_o) do
+      update_monocles(module, function, args, guards, body, monocle)
+    end
+  end
+
+  def update_monocles(_module, _function, _args, _guards, _body, []), do: nil
+
+  def update_monocles(module, function, args, guards, body, monocle) do
+    monocles = Module.get_attribute(module, :monocles)
+
+    Module.put_attribute(module, :monocles, [
+      {function, args, guards, body, monocle}
+      | monocles
+    ])
+  end
+
+  defmacro __before_compile__(env) do
+    monocles = Module.get_attribute(env.module, :monocles)
+
+    Enum.map(monocles, fn {function_name, args, _guards, [{:do, body}], _monocle} ->
+      # tracing_function_name = :"#{"traced_#{function_name}"}"
+      tracing_function_name = function_name
+
+      quote do
+        def unquote(tracing_function_name)(unquote_splicing(args)) do
+          IO.puts("helloO!!")
+          unquote(body)
+        end
+      end
+    end)
+    |> IO.inspect()
+
+    # quote do
+    #   def monocles do
+    #     Enum.reverse(@monocles)
+    #   end
+
+    # end
+  end
+end
+```
+
+```elixir
+defmodule Monocle.PageController do
+  use Phoenix.Controller
+  # use Monocle.Decorator
+
+  # @_o "foo"
+  def index(conn, _) do
+    send_resp(conn, 200, "Hello, World!")
+  end
+
+  # @_o "foo"
+  def post(conn, _) do
+    send_resp(conn, 200, "Hello, World!")
+  end
+end
+
+defmodule Router do
+  use Phoenix.Router
+
+  pipeline :browser do
+    plug(:accepts, ["html"])
+  end
+
+  scope "/", Monocle do
+    pipe_through(:browser)
+
+    get("/", PageController, :index)
+
+    # Prevent a horrible error because ErrorView is missing
+    get("/favicon.ico", PageController, :index)
+  end
+end
+
+defmodule Monocle.Endpoint do
+  use Phoenix.Endpoint, otp_app: :monocle
+  plug(Router)
+end
+
+# {:ok, _} = Supervisor.start_link([Monocle.Endpoint], strategy: :one_for_one)
+# Process.sleep(:infinity)
+
+defmodule Testing do
+  use Monocle.Decorator
+
+  def hello, do: "hello"
+
+  @_o "hi"
+  def test(), do: "test"
+
+  def oop(), do: nil
+end
+```
+
+```elixir
+# Testing.monocles()
+Testing.test()
+# Testing.traced_test()
+```
