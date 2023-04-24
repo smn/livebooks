@@ -60,28 +60,44 @@ defmodule Monocle.Decorator do
     ])
   end
 
+  # Thanks @decorator!
+  def implied_arities(args) do
+    arity = Enum.count(args)
+
+    default_count =
+      args
+      |> Enum.filter(fn
+        {:\\, _, _} -> true
+        _ -> false
+      end)
+      |> Enum.count()
+
+    :lists.seq(arity, arity - default_count, -1)
+  end
+
   defmacro __before_compile__(env) do
     monocles = Module.get_attribute(env.module, :monocles)
 
-    Enum.map(monocles, fn {function_name, args, _guards, [{:do, body}], _monocle} ->
-      # tracing_function_name = :"#{"traced_#{function_name}"}"
-      tracing_function_name = function_name
+    Enum.flat_map(monocles, fn {function_name, args, _guards, [{:do, body}], _monocle} ->
+      arities = implied_arities(args)
 
-      quote do
-        def unquote(tracing_function_name)(unquote_splicing(args)) do
-          IO.puts("helloO!!")
-          unquote(body)
-        end
-      end
+      overrideables =
+        Enum.map(arities, fn arity ->
+          quote do
+            defoverridable [{unquote(function_name), unquote(arity)}]
+          end
+        end)
+
+      overrideables ++
+        [
+          quote do
+            def unquote(function_name)(unquote_splicing(args)) do
+              IO.puts("helloO!!")
+              unquote(body)
+            end
+          end
+        ]
     end)
-    |> IO.inspect()
-
-    # quote do
-    #   def monocles do
-    #     Enum.reverse(@monocles)
-    #   end
-
-    # end
   end
 end
 ```
@@ -89,14 +105,14 @@ end
 ```elixir
 defmodule Monocle.PageController do
   use Phoenix.Controller
-  # use Monocle.Decorator
+  use Monocle.Decorator
 
-  # @_o "foo"
+  @_o "foo"
   def index(conn, _) do
     send_resp(conn, 200, "Hello, World!")
   end
 
-  # @_o "foo"
+  @_o "foo"
   def post(conn, _) do
     send_resp(conn, 200, "Hello, World!")
   end
@@ -124,23 +140,12 @@ defmodule Monocle.Endpoint do
   plug(Router)
 end
 
-# {:ok, _} = Supervisor.start_link([Monocle.Endpoint], strategy: :one_for_one)
-# Process.sleep(:infinity)
-
-defmodule Testing do
-  use Monocle.Decorator
-
-  def hello, do: "hello"
-
-  @_o "hi"
-  def test(), do: "test"
-
-  def oop(), do: nil
-end
+{:ok, _} = Supervisor.start_link([Monocle.Endpoint], strategy: :one_for_one)
+Process.sleep(:infinity)
 ```
 
 ```elixir
 # Testing.monocles()
-Testing.test()
-# Testing.traced_test()
+# Testing.test("f") |> IO.inspect
+# Testing.traced_test("f")
 ```
