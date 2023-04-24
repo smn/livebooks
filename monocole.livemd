@@ -6,7 +6,10 @@ Mix.install(
     {:opentelemetry_api, "~> 1.2"},
     {:phoenix, "~> 1.7"},
     {:bandit, "~> 0.7.7"},
-    {:jason, "~> 1.4"}
+    {:jason, "~> 1.4"},
+    {:opentelemetry_phoenix, "~> 1.1"},
+    {:opentelemetry_exporter, "~> 1.4"},
+    {:opentelemetry_logger_metadata, "~> 0.1.0"}
   ],
   config: [
     monocle: [
@@ -18,12 +21,58 @@ Mix.install(
          secret_key_base: String.duplicate("a", 64),
          adapter: Bandit.PhoenixAdapter
        ]}
+    ],
+    logger: [level: :info],
+    open_telemetry: [
+      processors: [
+        otel_batch_processor: %{
+          # Using `localhost` here since we are starting outside docker-compose where
+          # otel would refer to the hostname of the OpenCollector,
+          #
+          # If you are running in docker compose, kindly change it to the correct
+          # hostname: `otel`
+          exporter: {:opentelemetry_exporter, %{endpoints: [{:http, "localhost", 4318, []}]}}
+        }
+      ]
     ]
   ]
 )
 ```
 
 ## Section
+
+### @_o
+
+A cute and terrible decorator to add tracing to your Elixir code and see what's going on ...
+
+![monocle](https://media.giphy.com/media/7qqR23PvcgLaU/giphy.gif)
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+@_o "🐢"
+def turtles() do
+  Process.sleep(100)
+  "🐢"
+end
+```
+
+Will send a space trace to your `OpenTelemetry` backend tagged with `🐢`. Any calls the function calls that are also decorated with monocle `@_o` will be nested beneath the parent span.
+
+This is done with the `Monocle.Decorator` and you can use it like so:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+use Monocle.Decorator
+
+@_o "I see"
+def great_mysteries(), do: :math.pi
+```
+
+<!-- livebook:{"break_markdown":true} -->
+
+Here's the code for the decorator, it finds all functions annotated with the `@_o` monocle decorator and then rewrites them to have `OpenTelemetry` tracing wrapped around it.
 
 ```elixir
 defmodule Monocle.Decorator do
@@ -33,8 +82,6 @@ defmodule Monocle.Decorator do
       Module.register_attribute(__MODULE__, :_o, accumulate: true)
       @on_definition Monocle.Decorator
       @before_compile Monocle.Decorator
-
-      # import Monocle.Decorator
     end
   end
 
@@ -78,43 +125,60 @@ defmodule Monocle.Decorator do
   defmacro __before_compile__(env) do
     monocles = Module.get_attribute(env.module, :monocles)
 
-    Enum.flat_map(monocles, fn {function_name, args, _guards, [{:do, body}], _monocle} ->
-      arities = implied_arities(args)
+    requires = [
+      quote do
+        require OpenTelemetry.Tracer, as: Tracer
+      end
+    ]
 
-      overrideables =
-        Enum.map(arities, fn arity ->
-          quote do
-            defoverridable [{unquote(function_name), unquote(arity)}]
-          end
-        end)
+    overriden_functions =
+      Enum.flat_map(monocles, fn {function_name, args, _guards, [{:do, body}], [monocle_name]} ->
+        arities = implied_arities(args)
 
-      overrideables ++
-        [
-          quote do
-            def unquote(function_name)(unquote_splicing(args)) do
-              IO.puts("helloO!!")
-              unquote(body)
+        overrideables =
+          Enum.map(arities, fn arity ->
+            quote do
+              defoverridable [{unquote(function_name), unquote(arity)}]
             end
-          end
-        ]
-    end)
+          end)
+
+        overrideables ++
+          [
+            quote do
+              def unquote(function_name)(unquote_splicing(args)) do
+                Tracer.with_span unquote(monocle_name) do
+                  unquote(body)
+                end
+              end
+            end
+          ]
+      end)
+
+    requires ++ overriden_functions
   end
 end
 ```
+
+Below is a single file Phoenix application where a `PageController` is traced with a monocle.
 
 ```elixir
 defmodule Monocle.PageController do
   use Phoenix.Controller
   use Monocle.Decorator
 
-  @_o "foo"
-  def index(conn, _) do
-    send_resp(conn, 200, "Hello, World!")
+  @_o "index"
+  def index(conn, %{}) do
+    conn
+    |> delay()
+    |> delay()
+    |> delay()
+    |> send_resp(200, "Hello, World!")
   end
 
-  @_o "foo"
-  def post(conn, _) do
-    send_resp(conn, 200, "Hello, World!")
+  @_o "delaying"
+  def delay(conn) do
+    Process.sleep(100 * Enum.random(1..10))
+    conn
   end
 end
 
@@ -140,12 +204,8 @@ defmodule Monocle.Endpoint do
   plug(Router)
 end
 
+:ok = OpentelemetryLoggerMetadata.setup()
+
 {:ok, _} = Supervisor.start_link([Monocle.Endpoint], strategy: :one_for_one)
 Process.sleep(:infinity)
-```
-
-```elixir
-# Testing.monocles()
-# Testing.test("f") |> IO.inspect
-# Testing.traced_test("f")
 ```
