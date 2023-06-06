@@ -9,7 +9,8 @@ Mix.install(
     {:jason, "~> 1.4"},
     {:opentelemetry_phoenix, "~> 1.1"},
     {:opentelemetry_exporter, "~> 1.4"},
-    {:opentelemetry_logger_metadata, "~> 0.1.0"}
+    {:opentelemetry_logger_metadata, "~> 0.1.0"},
+    {:opentelemetry_sentry, "~> 0.1.1"}
   ],
   config: [
     monocle: [
@@ -23,7 +24,12 @@ Mix.install(
        ]}
     ],
     logger: [level: :info],
-    open_telemetry: [
+    opentelemetry: [
+      text_map_propagators: [OpentelemetrySentry.Propagator],
+      span_processor: :batch,
+      traces_exporter: :otlp,
+      sampler: {:otel_sampler_parent_based, %{root: {:otel_sampler_trace_id_ratio_based, 0.1}}},
+      resource: %{"service.name" => "myservice", "service.version" => "2.0"},
       processors: [
         otel_batch_processor: %{
           # Using `localhost` here since we are starting outside docker-compose where
@@ -31,7 +37,11 @@ Mix.install(
           #
           # If you are running in docker compose, kindly change it to the correct
           # hostname: `otel`
-          exporter: {:opentelemetry_exporter, %{endpoints: [{:http, "localhost", 4318, []}]}}
+          exporter:
+            {:opentelemetry_exporter,
+             %{
+               endpoints: [{:http, "localhost", 4318, []}]
+             }}
         }
       ]
     ]

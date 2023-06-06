@@ -1,0 +1,26 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+
+exporters:
+  sentry:
+    dsn: ${env:DSN}
+
+extensions:
+  health_check:
+  pprof:
+  zpages:
+
+service:
+  telemetry:
+    logs:
+      level: "debug"
+    metrics:
+      address: ":8888"
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      processors: []
+      exporters: [sentry]
